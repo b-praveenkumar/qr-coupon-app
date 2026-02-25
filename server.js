@@ -1,4 +1,5 @@
 const http = require('http');
+const https = require('https');
 const url = require('url');
 const fs = require('fs');
 const path = require('path');
@@ -14,6 +15,20 @@ const SMS_OUTBOX = path.join(DATA_DIR, 'sms_outbox.log');
 
 const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const RATE_LIMIT_MAX = 10;
+
+const GOOGLE_SA_PATH = process.env.GOOGLE_SA_PATH || '/etc/secrets/google-service-account.json';
+const GOOGLE_SA_FALLBACK = path.join(__dirname, 'secrets', 'google-service-account.json');
+const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID || '';
+const GOOGLE_SHEET_TAB = process.env.GOOGLE_SHEET_TAB || 'Leads';
+const ENABLE_GOOGLE_SHEETS = (() => {
+  if (process.env.ENABLE_GOOGLE_SHEETS !== undefined) {
+    return String(process.env.ENABLE_GOOGLE_SHEETS).toLowerCase() === 'true';
+  }
+  return String(process.env.NODE_ENV || '').toLowerCase() === 'production';
+})();
+
+const ADMIN_USER = process.env.ADMIN_USER || '';
+const ADMIN_PASS = process.env.ADMIN_PASS || '';
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(LEADS_CSV)) {
@@ -49,6 +64,30 @@ function csvEscape(value) {
     return '"' + s.replace(/"/g, '""') + '"';
   }
   return s;
+}
+
+function parseCsvLine(line) {
+  const out = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        cur += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === ',' && !inQuotes) {
+      out.push(cur);
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  out.push(cur);
+  return out;
 }
 
 function generateCoupon(prefix) {
@@ -158,6 +197,219 @@ function htmlPage(coupon, message, error) {
 </html>`;
 }
 
+function adminPage(rows) {
+  const header = ['timestamp', 'name', 'email', 'phone', 'coupon'];
+  const tableRows = rows.map((r) => {
+    const cols = header.map((_, i) => `<td>${escapeHtml(r[i] || '')}</td>`).join('');
+    return `<tr>${cols}</tr>`;
+  }).join('');
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Admin - Leads</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; background: #f7f7fb; color: #111; }
+    .wrap { max-width: 980px; margin: 0 auto; padding: 24px 18px 40px; }
+    h1 { font-size: 1.5rem; margin: 0 0 12px; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 10px; overflow: hidden; box-shadow: 0 8px 24px rgba(0,0,0,.08); }
+    th, td { padding: 10px 12px; border-bottom: 1px solid #eee; text-align: left; font-size: .95rem; }
+    th { background: #f0f2f7; position: sticky; top: 0; }
+    .meta { color: #555; margin-bottom: 10px; font-size: .9rem; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Leads (last ${rows.length})</h1>
+    <div class="meta">Most recent first.</div>
+    <table>
+      <thead>
+        <tr>
+          <th>timestamp</th>
+          <th>name</th>
+          <th>email</th>
+          <th>phone</th>
+          <th>coupon</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${tableRows}
+      </tbody>
+    </table>
+  </div>
+</body>
+</html>`;
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function readServiceAccount() {
+  const primary = GOOGLE_SA_PATH;
+  const fallback = GOOGLE_SA_FALLBACK;
+  const pathToUse = fs.existsSync(primary) ? primary : (fs.existsSync(fallback) ? fallback : null);
+  if (!pathToUse) return null;
+  try {
+    return JSON.parse(fs.readFileSync(pathToUse, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function base64url(input) {
+  const buf = Buffer.isBuffer(input) ? input : Buffer.from(input);
+  return buf.toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+
+function signJwtRS256(payload, privateKey) {
+  const header = { alg: 'RS256', typ: 'JWT' };
+  const encodedHeader = base64url(JSON.stringify(header));
+  const encodedPayload = base64url(JSON.stringify(payload));
+  const data = `${encodedHeader}.${encodedPayload}`;
+  const signer = crypto.createSign('RSA-SHA256');
+  signer.update(data);
+  const signature = signer.sign(privateKey);
+  return `${data}.${base64url(signature)}`;
+}
+
+const tokenCache = { token: '', exp: 0 };
+
+function httpsRequest(options, body) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => (data += chunk));
+      res.on('end', () => resolve({ status: res.statusCode || 0, data }));
+    });
+    req.on('error', reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+async function getAccessToken(sa) {
+  const now = Math.floor(Date.now() / 1000);
+  if (tokenCache.token && tokenCache.exp - 300 > now) return tokenCache.token;
+
+  const payload = {
+    iss: sa.client_email,
+    scope: 'https://www.googleapis.com/auth/spreadsheets',
+    aud: 'https://oauth2.googleapis.com/token',
+    iat: now,
+    exp: now + 3600
+  };
+  const jwt = signJwtRS256(payload, sa.private_key);
+  const body = new URLSearchParams({
+    grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+    assertion: jwt
+  }).toString();
+
+  const res = await httpsRequest({
+    method: 'POST',
+    hostname: 'oauth2.googleapis.com',
+    path: '/token',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Content-Length': Buffer.byteLength(body)
+    }
+  }, body);
+
+  if (res.status < 200 || res.status >= 300) {
+    throw new Error('Failed to obtain access token');
+  }
+
+  const out = JSON.parse(res.data || '{}');
+  tokenCache.token = out.access_token || '';
+  tokenCache.exp = now + (out.expires_in || 0);
+  return tokenCache.token;
+}
+
+async function appendToSheet(row) {
+  if (!ENABLE_GOOGLE_SHEETS) return;
+  if (!GOOGLE_SHEET_ID) throw new Error('Missing GOOGLE_SHEET_ID');
+  const sa = readServiceAccount();
+  if (!sa) throw new Error('Missing service account JSON');
+
+  const token = await getAccessToken(sa);
+  const values = JSON.stringify({ values: [row] });
+  const tab = encodeURIComponent(GOOGLE_SHEET_TAB);
+  const pathName = `/v4/spreadsheets/${GOOGLE_SHEET_ID}/values/${tab}!A:E:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+
+  const res = await httpsRequest({
+    method: 'POST',
+    hostname: 'sheets.googleapis.com',
+    path: pathName,
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(values)
+    }
+  }, values);
+
+  if (res.status < 200 || res.status >= 300) {
+    throw new Error('Sheets append failed');
+  }
+}
+
+async function fetchSheetRows(limit) {
+  if (!ENABLE_GOOGLE_SHEETS) return null;
+  if (!GOOGLE_SHEET_ID) throw new Error('Missing GOOGLE_SHEET_ID');
+  const sa = readServiceAccount();
+  if (!sa) throw new Error('Missing service account JSON');
+
+  const token = await getAccessToken(sa);
+  const tab = encodeURIComponent(GOOGLE_SHEET_TAB);
+  const pathName = `/v4/spreadsheets/${GOOGLE_SHEET_ID}/values/${tab}!A:E?majorDimension=ROWS`;
+
+  const res = await httpsRequest({
+    method: 'GET',
+    hostname: 'sheets.googleapis.com',
+    path: pathName,
+    headers: {
+      'Authorization': `Bearer ${token}`
+    }
+  });
+
+  if (res.status < 200 || res.status >= 300) {
+    throw new Error('Sheets read failed');
+  }
+
+  const out = JSON.parse(res.data || '{}');
+  const rows = out.values || [];
+  if (rows.length === 0) return [];
+  const withoutHeader = rows.slice(1);
+  const last = withoutHeader.slice(-limit).reverse();
+  return last;
+}
+
+function readLocalRows(limit) {
+  const text = fs.readFileSync(LEADS_CSV, 'utf8');
+  const lines = text.split('\n').filter(Boolean);
+  if (lines.length <= 1) return [];
+  const dataLines = lines.slice(1);
+  const last = dataLines.slice(-limit).reverse();
+  return last.map(parseCsvLine);
+}
+
+function basicAuthOk(req) {
+  if (!ADMIN_USER || !ADMIN_PASS) return false;
+  const hdr = req.headers['authorization'] || '';
+  if (!hdr.startsWith('Basic ')) return false;
+  const raw = Buffer.from(hdr.slice(6), 'base64').toString('utf8');
+  const idx = raw.indexOf(':');
+  if (idx === -1) return false;
+  const user = raw.slice(0, idx);
+  const pass = raw.slice(idx + 1);
+  return user === ADMIN_USER && pass === ADMIN_PASS;
+}
+
 const server = http.createServer(async (req, res) => {
   const parsed = url.parse(req.url, true);
   const ip = req.socket.remoteAddress || 'unknown';
@@ -214,10 +466,17 @@ const server = http.createServer(async (req, res) => {
 
     const coupon = generateCoupon(COUPON_PREFIX);
     const timestamp = new Date().toISOString();
-    const line = [timestamp, name, email, phone, coupon].map(csvEscape).join(',') + '\n';
+    const row = [timestamp, name, email, phone, coupon];
+    const line = row.map(csvEscape).join(',') + '\n';
     fs.appendFileSync(LEADS_CSV, line, 'utf8');
 
     sendSms(phone, `Your coupon code is ${coupon}`);
+
+    try {
+      await appendToSheet(row);
+    } catch (err) {
+      console.error('Sheets append error:', err.message);
+    }
 
     lastSent[phone] = now;
     fs.writeFileSync(LAST_SENT_JSON, JSON.stringify(lastSent, null, 2), 'utf8');
@@ -231,6 +490,39 @@ const server = http.createServer(async (req, res) => {
 
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(htmlPage(coupon, 'Thanks! We queued your SMS and here is your coupon.'));
+    return;
+  }
+
+  if (req.method === 'GET' && (parsed.pathname === '/admin' || parsed.pathname === '/admin/export')) {
+    if (!basicAuthOk(req)) {
+      res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Admin"' });
+      res.end('Unauthorized');
+      return;
+    }
+
+    let rows = [];
+    try {
+      const sheetRows = await fetchSheetRows(200);
+      rows = sheetRows || [];
+    } catch (err) {
+      console.error('Sheets read error:', err.message);
+      rows = readLocalRows(200);
+    }
+
+    if (parsed.pathname === '/admin/export') {
+      const header = 'timestamp,name,email,phone,coupon';
+      const body = rows.map((r) => r.map(csvEscape).join(',')).join('\n');
+      const csv = header + (body ? '\n' + body : '') + '\n';
+      res.writeHead(200, {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': 'attachment; filename="leads.csv"'
+      });
+      res.end(csv);
+      return;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(adminPage(rows));
     return;
   }
 
