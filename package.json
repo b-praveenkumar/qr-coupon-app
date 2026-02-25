@@ -1,0 +1,9 @@
+{
+  "name": "qr-coupon-app",
+  "version": "1.0.0",
+  "description": "QR coupon capture app with SMS delivery (no external deps)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
