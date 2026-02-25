@@ -29,6 +29,10 @@ const ENABLE_GOOGLE_SHEETS = (() => {
 
 const ADMIN_USER = process.env.ADMIN_USER || '';
 const ADMIN_PASS = process.env.ADMIN_PASS || '';
+const ENABLE_TWILIO = String(process.env.ENABLE_TWILIO || 'false').toLowerCase() === 'true';
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID || '';
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN || '';
+const TWILIO_FROM_PHONE = process.env.TWILIO_FROM_PHONE || '';
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(LEADS_CSV)) {
@@ -99,7 +103,34 @@ function generateCoupon(prefix) {
   return `${prefix}-${out}`;
 }
 
-function sendSms(to, body) {
+async function sendSms(to, body) {
+  if (ENABLE_TWILIO && TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN && TWILIO_FROM_PHONE) {
+    const postBody = new URLSearchParams({
+      From: TWILIO_FROM_PHONE,
+      To: to,
+      Body: body
+    }).toString();
+
+    const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString('base64');
+    const res = await httpsRequest({
+      method: 'POST',
+      hostname: 'api.twilio.com',
+      path: `/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`,
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(postBody)
+      }
+    }, postBody);
+
+    if (res.status === 201) return;
+
+    console.error('Twilio send failed with status:', res.status);
+    if (res.data) {
+      console.error('Twilio response:', res.data.slice(0, 500));
+    }
+  }
+
   const line = `[${new Date().toISOString()}] to=${to} body=${body}\n`;
   fs.appendFileSync(SMS_OUTBOX, line, 'utf8');
   console.log('SMS OUTBOX:', line.trim());
@@ -470,7 +501,7 @@ const server = http.createServer(async (req, res) => {
     const line = row.map(csvEscape).join(',') + '\n';
     fs.appendFileSync(LEADS_CSV, line, 'utf8');
 
-    sendSms(phone, `Your coupon code is ${coupon}`);
+    await sendSms(phone, `Your coupon code is ${coupon}`);
 
     try {
       await appendToSheet(row);
@@ -523,6 +554,19 @@ const server = http.createServer(async (req, res) => {
 
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(adminPage(rows));
+    return;
+  }
+
+  if (req.method === 'GET' && parsed.pathname === '/debug/sms') {
+    if (String(process.env.NODE_ENV || '').toLowerCase() === 'production') {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Not found');
+      return;
+    }
+    const text = fs.readFileSync(SMS_OUTBOX, 'utf8');
+    const lines = text.split('\n').filter(Boolean).slice(-20).join('\n') + '\n';
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end(lines);
     return;
   }
 

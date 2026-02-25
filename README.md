@@ -43,7 +43,8 @@
 - `GOOGLE_SHEET_TAB` (default `Leads`)
 - `ENABLE_GOOGLE_SHEETS` (default `true` in prod, `false` otherwise)
 - `ADMIN_USER` / `ADMIN_PASS` (required for `/admin` and `/admin/export`)
-- Twilio placeholders (unused):
+- Twilio (optional SMS sending):
+  - `ENABLE_TWILIO` (set to `true` to send real SMS)
   - `TWILIO_ACCOUNT_SID`
   - `TWILIO_AUTH_TOKEN`
   - `TWILIO_FROM_PHONE`
@@ -52,6 +53,24 @@
 - `data/leads.csv` stores submissions
 - `data/last_sent.json` stores last SMS timestamps per phone
 - `data/sms_outbox.log` stores SMS log lines
+
+## Twilio setup (optional)
+1. Create or log into your Twilio account (trial is fine).
+2. Get an SMS-capable phone number.
+3. For trial accounts, verify your destination phone number in Twilio.
+4. Set env vars:
+   - `ENABLE_TWILIO=true`
+   - `TWILIO_ACCOUNT_SID=...`
+   - `TWILIO_AUTH_TOKEN=...`
+   - `TWILIO_FROM_PHONE=+14155552671`
+
+If Twilio is not enabled or sending fails, the app falls back to logging SMS to `data/sms_outbox.log`.
+
+## Render env vars to add
+- `ENABLE_TWILIO=true`
+- `TWILIO_ACCOUNT_SID`
+- `TWILIO_AUTH_TOKEN`
+- `TWILIO_FROM_PHONE`
 
 ## Admin
 - `/admin` shows last 200 leads (most recent first)
