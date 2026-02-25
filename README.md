@@ -35,6 +35,20 @@
 - `node server.js`
 - Open `http://localhost:3000`
 
+Example curl (Twilio disabled):
+```bash
+ENABLE_TWILIO=false node server.js
+curl -s -X POST http://localhost:3000/api/submit \\
+  -H 'Content-Type: application/json' \\
+  -H 'Accept: application/json' \\
+  -d '{\"name\":\"Test User\",\"email\":\"test@example.com\",\"phone\":\"513-837-3891\"}'
+```
+
+Example response:
+```json
+{\"message\":\"Thanks! Coupon generated.\",\"coupon\":\"SAVE-AB12CD\",\"phone\":\"+15138373891\",\"sms\":{\"mode\":\"outbox\",\"ok\":true}}
+```
+
 ## Environment variables
 - `PORT` (default `3000`)
 - `COUPON_PREFIX` (default `SAVE`)
@@ -71,6 +85,13 @@ If Twilio is not enabled or sending fails, the app falls back to logging SMS to 
 - `TWILIO_ACCOUNT_SID`
 - `TWILIO_AUTH_TOKEN`
 - `TWILIO_FROM_PHONE`
+
+## Phone formats accepted
+- E.164 preferred (e.g., `+15138373891`)
+- 10-digit US numbers are accepted and normalized (e.g., `5138373891`, `513-837-3891`)
+
+## Delivery logs
+- Twilio Console → Monitor → Logs → Messaging
 
 ## Admin
 - `/admin` shows last 200 leads (most recent first)

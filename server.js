@@ -62,6 +62,20 @@ function phoneValid(phone) {
   return /^\+[1-9]\d{7,14}$/.test(phone);
 }
 
+function normalizePhone(raw) {
+  const trimmed = String(raw || '').trim();
+  const hasPlus = trimmed.startsWith('+');
+  const cleaned = trimmed.replace(/[^0-9+]/g, '');
+  if (hasPlus) {
+    if (/^\+[1-9]\d{7,14}$/.test(cleaned)) return cleaned;
+    return cleaned;
+  }
+  const digits = cleaned.replace(/\D/g, '');
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
+  return cleaned;
+}
+
 function csvEscape(value) {
   const s = String(value ?? '');
   if (s.includes('"') || s.includes(',') || s.includes('\n')) {
@@ -123,17 +137,26 @@ async function sendSms(to, body) {
       }
     }, postBody);
 
-    if (res.status === 201) return;
-
-    console.error('Twilio send failed with status:', res.status);
-    if (res.data) {
-      console.error('Twilio response:', res.data.slice(0, 500));
+    if (res.status === 201) {
+      let sid = '';
+      try {
+        sid = JSON.parse(res.data || '{}').sid || '';
+      } catch {
+        sid = '';
+      }
+      console.log(`[twilio] sent ok to=${to} sid=${sid || '(unknown)'}`);
+      return { mode: 'twilio', ok: true, status: 201, twilio_sid: sid };
     }
+
+    const bodySnippet = res.data ? String(res.data).slice(0, 300) : '';
+    console.error(`[twilio] send failed to=${to} status=${res.status} body=${bodySnippet}`);
+    return { mode: 'twilio', ok: false, status: res.status, error: `Twilio failed status ${res.status}` };
   }
 
   const line = `[${new Date().toISOString()}] to=${to} body=${body}\n`;
   fs.appendFileSync(SMS_OUTBOX, line, 'utf8');
-  console.log('SMS OUTBOX:', line.trim());
+  console.log(`[sms] outbox to=${to}`);
+  return { mode: 'outbox', ok: true };
 }
 
 function parseBody(req) {
@@ -420,6 +443,31 @@ async function fetchSheetRows(limit) {
   return last;
 }
 
+async function clearSheetRows() {
+  if (!ENABLE_GOOGLE_SHEETS) return;
+  if (!GOOGLE_SHEET_ID) throw new Error('Missing GOOGLE_SHEET_ID');
+  const sa = readServiceAccount();
+  if (!sa) throw new Error('Missing service account JSON');
+
+  const token = await getAccessToken(sa);
+  const tab = encodeURIComponent(GOOGLE_SHEET_TAB);
+  const pathName = `/v4/spreadsheets/${GOOGLE_SHEET_ID}/values/${tab}!A2:E:clear`;
+
+  const res = await httpsRequest({
+    method: 'POST',
+    hostname: 'sheets.googleapis.com',
+    path: pathName,
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    }
+  }, '{}');
+
+  if (res.status < 200 || res.status >= 300) {
+    throw new Error('Sheets clear failed');
+  }
+}
+
 function readLocalRows(limit) {
   const text = fs.readFileSync(LEADS_CSV, 'utf8');
   const lines = text.split('\n').filter(Boolean);
@@ -469,7 +517,7 @@ const server = http.createServer(async (req, res) => {
 
     const name = String(body.name || '').trim();
     const email = String(body.email || '').trim();
-    const phone = String(body.phone || '').trim();
+    const phone = normalizePhone(body.phone);
 
     if (!name) {
       res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -483,15 +531,23 @@ const server = http.createServer(async (req, res) => {
     }
     if (!phoneValid(phone)) {
       res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(htmlPage('', 'Phone must be E.164 like +14155552671.', true));
+      res.end(htmlPage('', 'Phone must be E.164 like +15138373891. You can also enter 10-digit US numbers and we’ll format it.', true));
       return;
     }
 
     const now = Date.now();
     const last = lastSent[phone];
     if (last && now - last < 24 * 60 * 60 * 1000) {
+      const remainingMs = 24 * 60 * 60 * 1000 - (now - last);
+      const retryHours = Math.max(1, Math.round(remainingMs / (60 * 60 * 1000)));
+      const accept = req.headers['accept'] || '';
+      if (accept.includes('application/json')) {
+        res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'Coupon already sent to this phone in the last 24 hours', retry_after_hours: retryHours }));
+        return;
+      }
       res.writeHead(429, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(htmlPage('', 'Coupon already sent to this phone in the last 24 hours.', true));
+      res.end(htmlPage('', `Coupon already sent to this phone in the last 24 hours. Try again after ${retryHours} hours.`, true));
       return;
     }
 
@@ -501,7 +557,7 @@ const server = http.createServer(async (req, res) => {
     const line = row.map(csvEscape).join(',') + '\n';
     fs.appendFileSync(LEADS_CSV, line, 'utf8');
 
-    await sendSms(phone, `Your coupon code is ${coupon}`);
+    const smsResult = await sendSms(phone, `Your coupon code is ${coupon}`);
 
     try {
       await appendToSheet(row);
@@ -515,12 +571,18 @@ const server = http.createServer(async (req, res) => {
     const accept = req.headers['accept'] || '';
     if (accept.includes('application/json')) {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ message: 'Thanks! Coupon generated.', coupon }));
+      res.end(JSON.stringify({ message: 'Thanks! Coupon generated.', coupon, phone, sms: smsResult }));
       return;
     }
 
+    let smsMsg = 'SMS queued locally.';
+    if (smsResult.mode === 'twilio' && smsResult.ok) {
+      smsMsg = `SMS: sent via Twilio (sid: ${smsResult.twilio_sid || 'unknown'})`;
+    } else if (smsResult.mode === 'twilio' && !smsResult.ok) {
+      smsMsg = `SMS failed (status ${smsResult.status || 'unknown'}). Check logs.`;
+    }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(htmlPage(coupon, 'Thanks! We queued your SMS and here is your coupon.'));
+    res.end(htmlPage(coupon, `Thanks! We queued your SMS and here is your coupon. Phone: ${phone}. ${smsMsg}`));
     return;
   }
 
@@ -557,6 +619,31 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'POST' && parsed.pathname === '/admin/reset') {
+    if (!basicAuthOk(req)) {
+      res.writeHead(401, { 'WWW-Authenticate': 'Basic realm=\"Admin\"' });
+      res.end('Unauthorized');
+      return;
+    }
+
+    fs.writeFileSync(LAST_SENT_JSON, JSON.stringify({}, null, 2), 'utf8');
+    fs.writeFileSync(LEADS_CSV, 'timestamp,name,email,phone,coupon\n', 'utf8');
+    fs.writeFileSync(SMS_OUTBOX, '', 'utf8');
+
+    if (ENABLE_GOOGLE_SHEETS) {
+      try {
+        await clearSheetRows();
+      } catch (err) {
+        console.error('Sheets clear error:', err.message);
+      }
+    }
+
+    console.log('[admin] reset performed');
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ ok: true, message: 'Leads and duplicate state cleared' }));
+    return;
+  }
+
   if (req.method === 'GET' && parsed.pathname === '/debug/sms') {
     if (String(process.env.NODE_ENV || '').toLowerCase() === 'production') {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -577,4 +664,5 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
   console.log('Twilio placeholders (unused): TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_PHONE');
+  console.log(`[twilio] enabled=${ENABLE_TWILIO} sid_set=${!!TWILIO_ACCOUNT_SID} token_set=${!!TWILIO_AUTH_TOKEN} from=${TWILIO_FROM_PHONE || "(unset)"}`);
 });
