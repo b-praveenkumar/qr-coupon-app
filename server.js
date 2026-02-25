@@ -137,25 +137,30 @@ async function sendSms(to, body) {
       }
     }, postBody);
 
+    let parsed = {};
+    try {
+      parsed = JSON.parse(res.data || '{}');
+    } catch {
+      parsed = {};
+    }
+
     if (res.status === 201) {
-      let sid = '';
-      try {
-        sid = JSON.parse(res.data || '{}').sid || '';
-      } catch {
-        sid = '';
-      }
-      console.log(`[twilio] sent ok to=${to} sid=${sid || '(unknown)'}`);
-      return { mode: 'twilio', ok: true, status: 201, twilio_sid: sid };
+      const sid = parsed.sid || '';
+      const errorCode = parsed.error_code ? String(parsed.error_code) : '';
+      console.log(`event="sms_send" sid=${sid || '(unknown)'} status=201 error_code=${errorCode || '(none)'} phone=${maskPhone(to)}`);
+      return { mode: 'twilio', ok: true, status: 201, twilio_sid: sid, error_code: errorCode };
     }
 
     const bodySnippet = res.data ? String(res.data).slice(0, 300) : '';
-    console.error(`[twilio] send failed to=${to} status=${res.status} body=${bodySnippet}`);
-    return { mode: 'twilio', ok: false, status: res.status, error: `Twilio failed status ${res.status}` };
+    const errorCode = parsed && parsed.error_code ? String(parsed.error_code) : '';
+    console.error(`event="sms_send" sid=(none) status=${res.status} error_code=${errorCode || '(unknown)'} phone=${maskPhone(to)}`);
+    console.error(`event="sms_send" body=${bodySnippet}`);
+    return { mode: 'twilio', ok: false, status: res.status, error: `Twilio failed status ${res.status}`, error_code: errorCode };
   }
 
   const line = `[${new Date().toISOString()}] to=${to} body=${body}\n`;
   fs.appendFileSync(SMS_OUTBOX, line, 'utf8');
-  console.log(`[sms] outbox to=${to}`);
+  console.log(`event="sms_send" sid=(none) status=outbox error_code=(none) phone=${maskPhone(to)}`);
   return { mode: 'outbox', ok: true };
 }
 
@@ -271,12 +276,19 @@ function adminPage(rows) {
     th, td { padding: 10px 12px; border-bottom: 1px solid #eee; text-align: left; font-size: .95rem; }
     th { background: #f0f2f7; position: sticky; top: 0; }
     .meta { color: #555; margin-bottom: 10px; font-size: .9rem; }
+    .actions { margin: 10px 0 16px; }
+    .btn { padding: 8px 12px; border: 0; background: #e24c4b; color: #fff; border-radius: 8px; font-weight: 600; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <h1>Leads (last ${rows.length})</h1>
     <div class="meta">Most recent first.</div>
+    <div class="actions">
+      <form method="post" action="/admin/reset" onsubmit="return confirm('Reset all leads and duplicate state?');">
+        <button class="btn" type="submit">Reset Leads</button>
+      </form>
+    </div>
     <table>
       <thead>
         <tr>
@@ -303,6 +315,12 @@ function escapeHtml(s) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function maskPhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (digits.length < 4) return '***';
+  return `***${digits.slice(-4)}`;
 }
 
 function readServiceAccount() {
@@ -571,18 +589,16 @@ const server = http.createServer(async (req, res) => {
     const accept = req.headers['accept'] || '';
     if (accept.includes('application/json')) {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ message: 'Thanks! Coupon generated.', coupon, phone, sms: smsResult }));
+      res.end(JSON.stringify({ ok: true, coupon, message: 'Coupon sent to your phone' }));
       return;
     }
 
-    let smsMsg = 'SMS queued locally.';
-    if (smsResult.mode === 'twilio' && smsResult.ok) {
-      smsMsg = `SMS: sent via Twilio (sid: ${smsResult.twilio_sid || 'unknown'})`;
-    } else if (smsResult.mode === 'twilio' && !smsResult.ok) {
-      smsMsg = `SMS failed (status ${smsResult.status || 'unknown'}). Check logs.`;
+    let smsMsg = 'We sent your coupon via SMS. Delivery may take a moment.';
+    if (smsResult.mode === 'outbox' || (smsResult.mode === 'twilio' && !smsResult.ok)) {
+      smsMsg = 'SMS queued. Coupon shown below.';
     }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(htmlPage(coupon, `Thanks! We queued your SMS and here is your coupon. Phone: ${phone}. ${smsMsg}`));
+    res.end(htmlPage(coupon, smsMsg));
     return;
   }
 
