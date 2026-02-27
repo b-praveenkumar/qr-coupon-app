@@ -11,6 +11,7 @@ const COUPON_PREFIX = process.env.COUPON_PREFIX || 'SAVE';
 const DATA_DIR = path.join(__dirname, 'data');
 const LEADS_CSV = path.join(DATA_DIR, 'leads.csv');
 const LAST_SENT_JSON = path.join(DATA_DIR, 'last_sent.json');
+const SEEN_JSON = path.join(DATA_DIR, 'seen.json');
 const SMS_OUTBOX = path.join(DATA_DIR, 'sms_outbox.log');
 
 const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
@@ -41,6 +42,9 @@ if (!fs.existsSync(LEADS_CSV)) {
 if (!fs.existsSync(LAST_SENT_JSON)) {
   fs.writeFileSync(LAST_SENT_JSON, JSON.stringify({}, null, 2), 'utf8');
 }
+if (!fs.existsSync(SEEN_JSON)) {
+  fs.writeFileSync(SEEN_JSON, JSON.stringify({ emails: {}, phones: {} }, null, 2), 'utf8');
+}
 if (!fs.existsSync(SMS_OUTBOX)) {
   fs.writeFileSync(SMS_OUTBOX, '', 'utf8');
 }
@@ -50,6 +54,17 @@ try {
   lastSent = JSON.parse(fs.readFileSync(LAST_SENT_JSON, 'utf8'));
 } catch {
   lastSent = {};
+}
+
+let seen = { emails: {}, phones: {} };
+try {
+  const parsedSeen = JSON.parse(fs.readFileSync(SEEN_JSON, 'utf8'));
+  seen = {
+    emails: parsedSeen.emails || {},
+    phones: parsedSeen.phones || {}
+  };
+} catch {
+  seen = { emails: {}, phones: {} };
 }
 
 const rateLimitStore = new Map();
@@ -534,7 +549,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     const name = String(body.name || '').trim();
-    const email = String(body.email || '').trim();
+    const email = String(body.email || '').trim().toLowerCase();
     const phone = normalizePhone(body.phone);
 
     if (!name) {
@@ -554,6 +569,18 @@ const server = http.createServer(async (req, res) => {
     }
 
     const now = Date.now();
+    if (seen.emails[email] || seen.phones[phone]) {
+      const accept = req.headers['accept'] || '';
+      if (accept.includes('application/json')) {
+        res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'Submission already received for this email or phone.' }));
+        return;
+      }
+      res.writeHead(409, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(htmlPage('', 'Submission already received for this email or phone.', true));
+      return;
+    }
+
     const last = lastSent[phone];
     if (last && now - last < 24 * 60 * 60 * 1000) {
       const remainingMs = 24 * 60 * 60 * 1000 - (now - last);
@@ -585,6 +612,9 @@ const server = http.createServer(async (req, res) => {
 
     lastSent[phone] = now;
     fs.writeFileSync(LAST_SENT_JSON, JSON.stringify(lastSent, null, 2), 'utf8');
+    seen.emails[email] = now;
+    seen.phones[phone] = now;
+    fs.writeFileSync(SEEN_JSON, JSON.stringify(seen, null, 2), 'utf8');
 
     const accept = req.headers['accept'] || '';
     if (accept.includes('application/json')) {
@@ -643,6 +673,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     fs.writeFileSync(LAST_SENT_JSON, JSON.stringify({}, null, 2), 'utf8');
+    fs.writeFileSync(SEEN_JSON, JSON.stringify({ emails: {}, phones: {} }, null, 2), 'utf8');
     fs.writeFileSync(LEADS_CSV, 'timestamp,name,email,phone,coupon\n', 'utf8');
     fs.writeFileSync(SMS_OUTBOX, '', 'utf8');
 
