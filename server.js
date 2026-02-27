@@ -12,7 +12,7 @@ const DATA_DIR = path.join(__dirname, 'data');
 const LEADS_CSV = path.join(DATA_DIR, 'leads.csv');
 const LAST_SENT_JSON = path.join(DATA_DIR, 'last_sent.json');
 const SEEN_JSON = path.join(DATA_DIR, 'seen.json');
-const SMS_OUTBOX = path.join(DATA_DIR, 'sms_outbox.log');
+const WHATSAPP_TO = '15138373891';
 
 const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const RATE_LIMIT_MAX = 10;
@@ -30,10 +30,6 @@ const ENABLE_GOOGLE_SHEETS = (() => {
 
 const ADMIN_USER = process.env.ADMIN_USER || '';
 const ADMIN_PASS = process.env.ADMIN_PASS || '';
-const ENABLE_TWILIO = String(process.env.ENABLE_TWILIO || 'false').toLowerCase() === 'true';
-const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID || '';
-const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN || '';
-const TWILIO_FROM_PHONE = process.env.TWILIO_FROM_PHONE || '';
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(LEADS_CSV)) {
@@ -44,9 +40,6 @@ if (!fs.existsSync(LAST_SENT_JSON)) {
 }
 if (!fs.existsSync(SEEN_JSON)) {
   fs.writeFileSync(SEEN_JSON, JSON.stringify({ emails: {}, phones: {} }, null, 2), 'utf8');
-}
-if (!fs.existsSync(SMS_OUTBOX)) {
-  fs.writeFileSync(SMS_OUTBOX, '', 'utf8');
 }
 
 let seen = { emails: {}, phones: {} };
@@ -125,52 +118,6 @@ function generateCoupon(prefix) {
   return `${prefix}-${out}`;
 }
 
-async function sendSms(to, body) {
-  if (ENABLE_TWILIO && TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN && TWILIO_FROM_PHONE) {
-    const postBody = new URLSearchParams({
-      From: TWILIO_FROM_PHONE,
-      To: to,
-      Body: body
-    }).toString();
-
-    const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString('base64');
-    const res = await httpsRequest({
-      method: 'POST',
-      hostname: 'api.twilio.com',
-      path: `/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`,
-      headers: {
-        'Authorization': `Basic ${auth}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Content-Length': Buffer.byteLength(postBody)
-      }
-    }, postBody);
-
-    let parsed = {};
-    try {
-      parsed = JSON.parse(res.data || '{}');
-    } catch {
-      parsed = {};
-    }
-
-    if (res.status === 201) {
-      const sid = parsed.sid || '';
-      const errorCode = parsed.error_code ? String(parsed.error_code) : '';
-      console.log(`event="sms_send" sid=${sid || '(unknown)'} status=201 error_code=${errorCode || '(none)'} phone=${maskPhone(to)}`);
-      return { mode: 'twilio', ok: true, status: 201, twilio_sid: sid, error_code: errorCode };
-    }
-
-    const bodySnippet = res.data ? String(res.data).slice(0, 300) : '';
-    const errorCode = parsed && parsed.error_code ? String(parsed.error_code) : '';
-    console.error(`event="sms_send" sid=(none) status=${res.status} error_code=${errorCode || '(unknown)'} phone=${maskPhone(to)}`);
-    console.error(`event="sms_send" body=${bodySnippet}`);
-    return { mode: 'twilio', ok: false, status: res.status, error: `Twilio failed status ${res.status}`, error_code: errorCode };
-  }
-
-  const line = `[${new Date().toISOString()}] to=${to} body=${body}\n`;
-  fs.appendFileSync(SMS_OUTBOX, line, 'utf8');
-  console.log(`event="sms_send" sid=(none) status=outbox error_code=(none) phone=${maskPhone(to)}`);
-  return { mode: 'outbox', ok: true };
-}
 
 function parseBody(req) {
   return new Promise((resolve, reject) => {
@@ -245,7 +192,7 @@ function htmlPage(coupon, message, error) {
   <div class="wrap">
     <div class="card">
       <h1>Claim your coupon</h1>
-      <p>Enter your details and we will text your coupon code.</p>
+      <p>Enter your details and we will open WhatsApp to send your coupon request.</p>
       <form id="leadForm" method="post" action="/api/submit">
         <label for="name">Name</label>
         <input id="name" name="name" required />
@@ -255,7 +202,7 @@ function htmlPage(coupon, message, error) {
         <input id="phone" name="phone" placeholder="+14155552671" required />
         <button type="submit">Get my coupon</button>
         <div id="msg" class="msg ${msgClass}">${escapeHtml(msgText)}</div>
-        <div class="note">SMS is queued locally (no external SMS integration required).</div>
+        <div class="note">You will be redirected to WhatsApp to send a message.</div>
       </form>
     </div>
   </div>
@@ -282,6 +229,8 @@ function htmlPage(coupon, message, error) {
         msg.textContent = out.message + ' Coupon: ' + out.coupon;
         msg.classList.add('ok');
         form.reset();
+        const waText = encodeURIComponent('get my coupon');
+        window.location.href = `https://wa.me/${WHATSAPP_TO}?text=${waText}`;
       } catch (err) {
         msg.textContent = err.message;
         msg.classList.add('err');
@@ -667,8 +616,6 @@ const server = http.createServer(async (req, res) => {
     const line = row.map(csvEscape).join(',') + '\n';
     fs.appendFileSync(LEADS_CSV, line, 'utf8');
 
-    const smsResult = await sendSms(phone, `Your coupon code is ${coupon}`);
-
     try {
       await appendToSheet(row);
     } catch (err) {
@@ -682,14 +629,11 @@ const server = http.createServer(async (req, res) => {
     const accept = req.headers['accept'] || '';
     if (accept.includes('application/json')) {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ ok: true, coupon, message: 'Coupon sent to your phone' }));
+      res.end(JSON.stringify({ ok: true, coupon, message: 'Coupon ready. Opening WhatsApp.' }));
       return;
     }
 
-    let smsMsg = 'We sent your coupon via SMS. Delivery may take a moment.';
-    if (smsResult.mode === 'outbox' || (smsResult.mode === 'twilio' && !smsResult.ok)) {
-      smsMsg = 'SMS queued. Coupon shown below.';
-    }
+    const smsMsg = 'We are opening WhatsApp so you can send the message.';
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(htmlPage(coupon, smsMsg));
     return;
@@ -738,7 +682,6 @@ const server = http.createServer(async (req, res) => {
     fs.writeFileSync(LAST_SENT_JSON, JSON.stringify({}, null, 2), 'utf8');
     fs.writeFileSync(SEEN_JSON, JSON.stringify({ emails: {}, phones: {} }, null, 2), 'utf8');
     fs.writeFileSync(LEADS_CSV, 'timestamp,name,email,phone,coupon\n', 'utf8');
-    fs.writeFileSync(SMS_OUTBOX, '', 'utf8');
 
     if (ENABLE_GOOGLE_SHEETS) {
       try {
@@ -754,25 +697,10 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === 'GET' && parsed.pathname === '/debug/sms') {
-    if (String(process.env.NODE_ENV || '').toLowerCase() === 'production') {
-      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('Not found');
-      return;
-    }
-    const text = fs.readFileSync(SMS_OUTBOX, 'utf8');
-    const lines = text.split('\n').filter(Boolean).slice(-20).join('\n') + '\n';
-    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end(lines);
-    return;
-  }
-
   res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
   res.end('Not found');
 });
 
 server.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
-  console.log('Twilio placeholders (unused): TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_PHONE');
-  console.log(`[twilio] enabled=${ENABLE_TWILIO} sid_set=${!!TWILIO_ACCOUNT_SID} token_set=${!!TWILIO_AUTH_TOKEN} from=${TWILIO_FROM_PHONE || "(unset)"}`);
 });
