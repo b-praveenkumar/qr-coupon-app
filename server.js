@@ -496,6 +496,47 @@ async function fetchSheetRows(limit) {
   return last;
 }
 
+async function fetchAllSheetRows() {
+  if (!ENABLE_GOOGLE_SHEETS) return null;
+  if (!GOOGLE_SHEET_ID) throw new Error('Missing GOOGLE_SHEET_ID');
+  const sa = readServiceAccount();
+  if (!sa) throw new Error('Missing service account JSON');
+
+  const token = await getAccessToken(sa);
+  const tab = encodeURIComponent(GOOGLE_SHEET_TAB);
+  const pathName = `/v4/spreadsheets/${GOOGLE_SHEET_ID}/values/${tab}!A:E?majorDimension=ROWS`;
+
+  const res = await httpsRequest({
+    method: 'GET',
+    hostname: 'sheets.googleapis.com',
+    path: pathName,
+    headers: {
+      'Authorization': `Bearer ${token}`
+    }
+  });
+
+  if (res.status < 200 || res.status >= 300) {
+    throw new Error('Sheets read failed');
+  }
+
+  const out = JSON.parse(res.data || '{}');
+  const rows = out.values || [];
+  if (rows.length === 0) return [];
+  return rows.slice(1);
+}
+
+async function sheetHasDuplicate(email, phone) {
+  const rows = await fetchAllSheetRows();
+  const emailLower = String(email || '').toLowerCase();
+  for (const row of rows) {
+    const rowEmail = String(row[2] || '').trim().toLowerCase();
+    const rowPhone = String(row[3] || '').trim();
+    if (rowEmail && rowEmail === emailLower) return true;
+    if (rowPhone && rowPhone === phone) return true;
+  }
+  return false;
+}
+
 async function clearSheetRows() {
   if (!ENABLE_GOOGLE_SHEETS) return;
   if (!GOOGLE_SHEET_ID) throw new Error('Missing GOOGLE_SHEET_ID');
@@ -589,6 +630,24 @@ const server = http.createServer(async (req, res) => {
     }
 
     const now = Date.now();
+    if (ENABLE_GOOGLE_SHEETS) {
+      try {
+        if (await sheetHasDuplicate(email, phone)) {
+          const accept = req.headers['accept'] || '';
+          if (accept.includes('application/json')) {
+            res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ error: 'Submission already received for this email or phone.' }));
+            return;
+          }
+          res.writeHead(409, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end(htmlPage('', 'Submission already received for this email or phone.', true));
+          return;
+        }
+      } catch (err) {
+        console.error('Sheets duplicate check error:', err.message);
+      }
+    }
+
     if (seen.emails[email] || seen.phones[phone]) {
       const accept = req.headers['accept'] || '';
       if (accept.includes('application/json')) {
