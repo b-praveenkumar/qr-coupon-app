@@ -217,9 +217,8 @@ function rateLimitOk(ip) {
 }
 
 function htmlPage(coupon, message, error) {
-  const msgHtml = message
-    ? `<div class="msg ${error ? 'err' : 'ok'}">${message}${coupon ? ' Coupon: ' + coupon : ''}</div>`
-    : '';
+  const msgText = message ? `${message}${coupon ? ' Coupon: ' + coupon : ''}` : '';
+  const msgClass = message ? (error ? 'err' : 'ok') : '';
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -247,7 +246,7 @@ function htmlPage(coupon, message, error) {
     <div class="card">
       <h1>Claim your coupon</h1>
       <p>Enter your details and we will text your coupon code.</p>
-      <form method="post" action="/api/submit">
+      <form id="leadForm" method="post" action="/api/submit">
         <label for="name">Name</label>
         <input id="name" name="name" required />
         <label for="email">Email</label>
@@ -255,11 +254,39 @@ function htmlPage(coupon, message, error) {
         <label for="phone">Phone (E.164)</label>
         <input id="phone" name="phone" placeholder="+14155552671" required />
         <button type="submit">Get my coupon</button>
-        ${msgHtml}
+        <div id="msg" class="msg ${msgClass}">${escapeHtml(msgText)}</div>
         <div class="note">SMS is queued locally (no external SMS integration required).</div>
       </form>
     </div>
   </div>
+  <script>
+    const form = document.getElementById('leadForm');
+    const msg = document.getElementById('msg');
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      msg.textContent = '';
+      msg.className = 'msg';
+      const payload = {
+        name: form.name.value,
+        email: form.email.value,
+        phone: form.phone.value
+      };
+      try {
+        const res = await fetch('/api/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const out = await res.json();
+        if (!res.ok) throw new Error(out.error || 'Something went wrong');
+        msg.textContent = out.message + ' Coupon: ' + out.coupon;
+        msg.classList.add('ok');
+      } catch (err) {
+        msg.textContent = err.message;
+        msg.classList.add('err');
+      }
+    });
+  </script>
 </body>
 </html>`;
 }
