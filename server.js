@@ -49,13 +49,6 @@ if (!fs.existsSync(SMS_OUTBOX)) {
   fs.writeFileSync(SMS_OUTBOX, '', 'utf8');
 }
 
-let lastSent = {};
-try {
-  lastSent = JSON.parse(fs.readFileSync(LAST_SENT_JSON, 'utf8'));
-} catch {
-  lastSent = {};
-}
-
 let seen = { emails: {}, phones: {} };
 try {
   const parsedSeen = JSON.parse(fs.readFileSync(SEEN_JSON, 'utf8'));
@@ -581,21 +574,6 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    const last = lastSent[phone];
-    if (last && now - last < 24 * 60 * 60 * 1000) {
-      const remainingMs = 24 * 60 * 60 * 1000 - (now - last);
-      const retryHours = Math.max(1, Math.round(remainingMs / (60 * 60 * 1000)));
-      const accept = req.headers['accept'] || '';
-      if (accept.includes('application/json')) {
-        res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ error: 'Coupon already sent to this phone in the last 24 hours', retry_after_hours: retryHours }));
-        return;
-      }
-      res.writeHead(429, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(htmlPage('', `Coupon already sent to this phone in the last 24 hours. Try again after ${retryHours} hours.`, true));
-      return;
-    }
-
     const coupon = generateCoupon(COUPON_PREFIX);
     const timestamp = new Date().toISOString();
     const row = [timestamp, name, email, phone, coupon];
@@ -610,8 +588,6 @@ const server = http.createServer(async (req, res) => {
       console.error('Sheets append error:', err.message);
     }
 
-    lastSent[phone] = now;
-    fs.writeFileSync(LAST_SENT_JSON, JSON.stringify(lastSent, null, 2), 'utf8');
     seen.emails[email] = now;
     seen.phones[phone] = now;
     fs.writeFileSync(SEEN_JSON, JSON.stringify(seen, null, 2), 'utf8');
