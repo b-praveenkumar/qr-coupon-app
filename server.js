@@ -281,6 +281,7 @@ function htmlPage(coupon, message, error) {
         if (!res.ok) throw new Error(out.error || 'Something went wrong');
         msg.textContent = out.message + ' Coupon: ' + out.coupon;
         msg.classList.add('ok');
+        form.reset();
       } catch (err) {
         msg.textContent = err.message;
         msg.classList.add('err');
