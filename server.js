@@ -230,7 +230,7 @@ function htmlPage(coupon, message, error) {
         msg.classList.add('ok');
         form.reset();
         const waText = encodeURIComponent('get my coupon');
-        window.location.href = `https://wa.me/${WHATSAPP_TO}?text=${waText}`;
+        window.location.href = 'https://wa.me/${WHATSAPP_TO}?text=' + waText;
       } catch (err) {
         msg.textContent = err.message;
         msg.classList.add('err');
