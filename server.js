@@ -33,7 +33,7 @@ const ADMIN_PASS = process.env.ADMIN_PASS || '';
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(LEADS_CSV)) {
-  fs.writeFileSync(LEADS_CSV, 'timestamp,name,email,phone,coupon\n', 'utf8');
+  fs.writeFileSync(LEADS_CSV, 'timestamp,name,phone,email,looking_for,investment_range,coupon\n', 'utf8');
 }
 if (!fs.existsSync(LAST_SENT_JSON)) {
   fs.writeFileSync(LAST_SENT_JSON, JSON.stringify({}, null, 2), 'utf8');
@@ -171,36 +171,196 @@ function htmlPage(coupon, message, error) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Get Your Coupon</title>
+  <title>Claim Your Offer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600&family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet">
   <style>
-    :root { color-scheme: light; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; background: #f7f7fb; color: #111; }
-    .wrap { max-width: 520px; margin: 0 auto; padding: 28px 18px 40px; }
-    .card { background: #fff; border-radius: 14px; padding: 20px; box-shadow: 0 8px 24px rgba(0,0,0,.08); }
-    h1 { font-size: 1.6rem; margin: 0 0 12px; }
-    p { margin: 0 0 18px; color: #444; }
-    label { display: block; font-weight: 600; margin: 12px 0 6px; }
-    input { width: 100%; padding: 12px; font-size: 1rem; border-radius: 10px; border: 1px solid #ddd; }
-    button { margin-top: 16px; width: 100%; padding: 12px; font-size: 1rem; border: 0; border-radius: 10px; background: #1f6feb; color: #fff; font-weight: 700; }
+    :root {
+      color-scheme: light;
+      --ink: #141414;
+      --muted: #5c5c5c;
+      --line: rgba(20, 20, 20, .12);
+      --card: #ffffff;
+      --accent: #b8903f;
+      --accent-dark: #8a6a23;
+      --bg1: #f6f3ee;
+      --bg2: #efe7da;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Source Sans 3", system-ui, sans-serif;
+      background:
+        radial-gradient(1200px 600px at 10% -10%, #ffffff 0%, var(--bg1) 35%, var(--bg2) 100%),
+        linear-gradient(135deg, #f8f6f2, #efe7da);
+    }
+    .wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 40px 20px 60px;
+    }
+    .hero {
+      display: grid;
+      gap: 18px;
+      margin-bottom: 22px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .logo {
+      width: 72px;
+      height: 72px;
+      border-radius: 14px;
+      object-fit: cover;
+      box-shadow: 0 8px 18px rgba(20, 20, 20, .12);
+      border: 1px solid rgba(20, 20, 20, .08);
+    }
+    .eyebrow {
+      letter-spacing: .18em;
+      text-transform: uppercase;
+      font-size: .95rem;
+      color: var(--accent-dark);
+      font-weight: 700;
+    }
+    .brand .eyebrow {
+      font-size: 1rem;
+    }
+    h1 {
+      font-family: "Playfair Display", serif;
+      font-size: clamp(1.6rem, 2.1vw, 2.1rem);
+      margin: 0;
+      line-height: 1.25;
+    }
+    .sub {
+      color: var(--muted);
+      max-width: 42ch;
+      margin: 0;
+      font-size: 1rem;
+    }
+    .card {
+      background: var(--card);
+      border-radius: 18px;
+      padding: 26px;
+      box-shadow:
+        0 24px 60px rgba(20, 20, 20, .12),
+        0 2px 8px rgba(20, 20, 20, .06);
+      border: 1px solid rgba(20, 20, 20, .05);
+    }
+    .grid {
+      display: grid;
+      gap: 16px;
+    }
+    label {
+      display: block;
+      font-weight: 600;
+      margin: 10px 0 6px;
+      color: var(--ink);
+    }
+    input[type="text"], input[type="email"], input[type="tel"] {
+      width: 100%;
+      padding: 12px 14px;
+      font-size: 1rem;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: #fff;
+      outline: none;
+    }
+    input:focus {
+      border-color: rgba(184, 144, 63, .6);
+      box-shadow: 0 0 0 3px rgba(184, 144, 63, .15);
+    }
+    .group {
+      margin: 16px 0 6px;
+      font-weight: 700;
+      color: var(--ink);
+    }
+    .options {
+      display: grid;
+      gap: 8px;
+    }
+    .option {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #faf8f5;
+    }
+    .option input { width: auto; }
+    button {
+      margin-top: 14px;
+      width: 100%;
+      padding: 12px 14px;
+      font-size: 1rem;
+      border: 0;
+      border-radius: 12px;
+      background: linear-gradient(135deg, var(--accent) 0%, #d1a24a 100%);
+      color: #fff;
+      font-weight: 700;
+      letter-spacing: .02em;
+      cursor: pointer;
+    }
+    button:hover { background: linear-gradient(135deg, var(--accent-dark), var(--accent)); }
     .msg { margin-top: 12px; font-size: .95rem; }
     .ok { color: #0a7f2e; }
     .err { color: #b42318; }
-    .note { font-size: .85rem; color: #666; margin-top: 8px; }
+    .note { font-size: .85rem; color: var(--muted); margin-top: 8px; }
+    @media (min-width: 780px) {
+      .grid { grid-template-columns: 1fr 1fr; }
+      .full { grid-column: 1 / -1; }
+    }
   </style>
 </head>
 <body>
   <div class="wrap">
+    <div class="hero">
+      <div class="brand">
+        <img class="logo" src="/logo" alt="Aasritha Infra Projects logo" />
+        <div class="eyebrow">AASRITHA INFRA PROJECTS</div>
+      </div>
+      <h1>Exclusive access to curated investment opportunities</h1>
+      <p class="sub">Share your preferences and we’ll open WhatsApp to connect with a dedicated advisor.</p>
+    </div>
     <div class="card">
-      <h1>Claim your coupon</h1>
-      <p>Enter your details and we will open WhatsApp to send your coupon request.</p>
       <form id="leadForm" method="post" action="/api/submit">
-        <label for="name">Name</label>
-        <input id="name" name="name" required />
-        <label for="email">Email</label>
-        <input id="email" name="email" type="email" required />
-        <label for="phone">Phone (E.164)</label>
-        <input id="phone" name="phone" placeholder="+14155552671" required />
-        <button type="submit">Get my coupon</button>
+        <div class="grid">
+          <div class="full">
+            <label for="name">Full Name</label>
+            <input id="name" name="name" type="text" required />
+          </div>
+          <div>
+            <label for="phone">Phone Number</label>
+            <input id="phone" name="phone" type="tel" placeholder="+14155552671" required />
+          </div>
+          <div>
+            <label for="email">Email</label>
+            <input id="email" name="email" type="email" required />
+          </div>
+          <div class="full">
+            <div class="group">What are you looking for?</div>
+            <div class="options">
+              <label class="option"><input type="radio" name="looking_for" value="Investment opportunity" required /> Investment opportunity</label>
+              <label class="option"><input type="radio" name="looking_for" value="Future retirement home" /> Future retirement home</label>
+              <label class="option"><input type="radio" name="looking_for" value="Family home in Hyderabad" /> Family home in Hyderabad</label>
+              <label class="option"><input type="radio" name="looking_for" value="Just exploring" /> Just exploring</label>
+            </div>
+          </div>
+          <div class="full">
+            <div class="group">What investment range are you considering?</div>
+            <div class="options">
+              <label class="option"><input type="radio" name="investment_range" value="$100k–200k" required /> $100k–200k</label>
+              <label class="option"><input type="radio" name="investment_range" value="$200k–400k" /> $200k–400k</label>
+              <label class="option"><input type="radio" name="investment_range" value="$400k+" /> $400k+</label>
+              <label class="option"><input type="radio" name="investment_range" value="Not sure yet" /> Not sure yet</label>
+            </div>
+          </div>
+        </div>
+        <button type="submit">Get My Coupon</button>
         <div id="msg" class="msg ${msgClass}">${escapeHtml(msgText)}</div>
         <div class="note">You will be redirected to WhatsApp to send a message.</div>
       </form>
@@ -215,8 +375,10 @@ function htmlPage(coupon, message, error) {
       msg.className = 'msg';
       const payload = {
         name: form.name.value,
+        phone: form.phone.value,
         email: form.email.value,
-        phone: form.phone.value
+        looking_for: form.looking_for.value,
+        investment_range: form.investment_range.value
       };
       try {
         const res = await fetch('/api/submit', {
@@ -242,7 +404,7 @@ function htmlPage(coupon, message, error) {
 }
 
 function adminPage(rows) {
-  const header = ['timestamp', 'name', 'email', 'phone', 'coupon'];
+  const header = ['timestamp', 'name', 'phone', 'email', 'looking_for', 'investment_range', 'coupon'];
   const tableRows = rows.map((r) => {
     const cols = header.map((_, i) => `<td>${escapeHtml(r[i] || '')}</td>`).join('');
     return `<tr>${cols}</tr>`;
@@ -279,8 +441,10 @@ function adminPage(rows) {
         <tr>
           <th>timestamp</th>
           <th>name</th>
-          <th>email</th>
           <th>phone</th>
+          <th>email</th>
+          <th>looking_for</th>
+          <th>investment_range</th>
           <th>coupon</th>
         </tr>
       </thead>
@@ -397,7 +561,7 @@ async function appendToSheet(row) {
   const token = await getAccessToken(sa);
   const values = JSON.stringify({ values: [row] });
   const tab = encodeURIComponent(GOOGLE_SHEET_TAB);
-  const pathName = `/v4/spreadsheets/${GOOGLE_SHEET_ID}/values/${tab}!A:E:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+  const pathName = `/v4/spreadsheets/${GOOGLE_SHEET_ID}/values/${tab}!A:G:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
 
   const res = await httpsRequest({
     method: 'POST',
@@ -423,7 +587,7 @@ async function fetchSheetRows(limit) {
 
   const token = await getAccessToken(sa);
   const tab = encodeURIComponent(GOOGLE_SHEET_TAB);
-  const pathName = `/v4/spreadsheets/${GOOGLE_SHEET_ID}/values/${tab}!A:E?majorDimension=ROWS`;
+  const pathName = `/v4/spreadsheets/${GOOGLE_SHEET_ID}/values/${tab}!A:G?majorDimension=ROWS`;
 
   const res = await httpsRequest({
     method: 'GET',
@@ -454,7 +618,7 @@ async function fetchAllSheetRows() {
 
   const token = await getAccessToken(sa);
   const tab = encodeURIComponent(GOOGLE_SHEET_TAB);
-  const pathName = `/v4/spreadsheets/${GOOGLE_SHEET_ID}/values/${tab}!A:E?majorDimension=ROWS`;
+  const pathName = `/v4/spreadsheets/${GOOGLE_SHEET_ID}/values/${tab}!A:G?majorDimension=ROWS`;
 
   const res = await httpsRequest({
     method: 'GET',
@@ -479,8 +643,8 @@ async function sheetHasDuplicate(email, phone) {
   const rows = await fetchAllSheetRows();
   const emailLower = String(email || '').toLowerCase();
   for (const row of rows) {
-    const rowEmail = String(row[2] || '').trim().toLowerCase();
-    const rowPhone = String(row[3] || '').trim();
+    const rowPhone = String(row[2] || '').trim();
+    const rowEmail = String(row[3] || '').trim().toLowerCase();
     if (rowEmail && rowEmail === emailLower) return true;
     if (rowPhone && rowPhone === phone) return true;
   }
@@ -543,6 +707,19 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'GET' && parsed.pathname === '/logo') {
+    const logoPath = path.join(__dirname, 'Aasritha_logo.jpeg');
+    if (!fs.existsSync(logoPath)) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Not found');
+      return;
+    }
+    const buf = fs.readFileSync(logoPath);
+    res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=86400' });
+    res.end(buf);
+    return;
+  }
+
   if (req.method === 'POST' && parsed.pathname === '/api/submit') {
     if (!rateLimitOk(ip)) {
       res.writeHead(429, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -562,6 +739,8 @@ const server = http.createServer(async (req, res) => {
     const name = String(body.name || '').trim();
     const email = String(body.email || '').trim().toLowerCase();
     const phone = normalizePhone(body.phone);
+    const lookingFor = String(body.looking_for || '').trim();
+    const investmentRange = String(body.investment_range || '').trim();
 
     if (!name) {
       res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -576,6 +755,16 @@ const server = http.createServer(async (req, res) => {
     if (!phoneValid(phone)) {
       res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(htmlPage('', 'Phone must be E.164 like +15138373891. You can also enter 10-digit US numbers and we’ll format it.', true));
+      return;
+    }
+    if (!lookingFor) {
+      res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(htmlPage('', 'Please select what you are looking for.', true));
+      return;
+    }
+    if (!investmentRange) {
+      res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(htmlPage('', 'Please select an investment range.', true));
       return;
     }
 
@@ -612,7 +801,7 @@ const server = http.createServer(async (req, res) => {
 
     const coupon = generateCoupon(COUPON_PREFIX);
     const timestamp = new Date().toISOString();
-    const row = [timestamp, name, email, phone, coupon];
+    const row = [timestamp, name, phone, email, lookingFor, investmentRange, coupon];
     const line = row.map(csvEscape).join(',') + '\n';
     fs.appendFileSync(LEADS_CSV, line, 'utf8');
 
@@ -656,7 +845,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (parsed.pathname === '/admin/export') {
-      const header = 'timestamp,name,email,phone,coupon';
+      const header = 'timestamp,name,phone,email,looking_for,investment_range,coupon';
       const body = rows.map((r) => r.map(csvEscape).join(',')).join('\n');
       const csv = header + (body ? '\n' + body : '') + '\n';
       res.writeHead(200, {
@@ -681,7 +870,7 @@ const server = http.createServer(async (req, res) => {
 
     fs.writeFileSync(LAST_SENT_JSON, JSON.stringify({}, null, 2), 'utf8');
     fs.writeFileSync(SEEN_JSON, JSON.stringify({ emails: {}, phones: {} }, null, 2), 'utf8');
-    fs.writeFileSync(LEADS_CSV, 'timestamp,name,email,phone,coupon\n', 'utf8');
+    fs.writeFileSync(LEADS_CSV, 'timestamp,name,phone,email,looking_for,investment_range,coupon\n', 'utf8');
 
     if (ENABLE_GOOGLE_SHEETS) {
       try {
